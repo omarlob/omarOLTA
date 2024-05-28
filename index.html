@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.1/p5.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.1/addons/p5.sound.min.js"></script>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+    <meta charset="utf-8" />
+  </head>
+  <body>
+    <!-- Loading Elements -->
+    <!-- Make sure you import the style.css file like the one above, inside the header tag.
+    Alternatively you can add the custom CSS properties from it into your own css files -->
+    <div id="loadingOverlay">
+      <div id="loadingDiv">
+        <svg viewBox="0 0 100 100">
+          <circle
+            cx="50"
+            cy="50"
+            r="45"
+            fill="none"
+            stroke="#FFFFFF50"
+            stroke-width="10"
+          />
+          <circle
+            id="progress"
+            cx="50"
+            cy="50"
+            r="45"
+            fill="none"
+            stroke="white"
+            stroke-width="11"
+            stroke-dasharray="0 283"
+            stroke-linecap="round"
+          />
+        </svg>
+      </div>
+      <div id="popupMessage">
+        <span id="loadingText"></span>
+      </div>
+    </div>
+    <!-- Loading Elements -->
+
+    <script src="./lib/olta.js"></script>
+    <script>
+      const olta = Olta();
+      const scallingFactor = 100000; // Random values can go from 0 to 15000000
+
+      let sh, gl;
+      let vert, frag;
+      let mouseXRatio, mouseYRatio; // Ratio of mouse position to canvas size
+      let distortionStrength = 0.0; // Strength of distortion effect
+
+      let distortions = [];
+      let value;
+
+      // ----------- Loading Logic -----------
+      let startTime, timeLeft, elapsedTime;
+      let timerInSeconds = 10; // Total time in seconds
+
+      const progress = document.getElementById("progress");
+      const loadingText = document.getElementById("loadingText");
+      const loadingOverlay = document.getElementById("loadingOverlay");
+
+      let walletAddress, fullWalletAddress, currentMessage;
+      let loading = false;
+
+      // This is the default message the user will see when they interact before logging in (usually the first interaction)
+      const defaultMessage =
+        "Thanks for collaborating! Please make sure you are logged in";
+
+      // This is the array of possible messages that will be displayed to the user after interacting.
+      // Go ahead and add your own ideas, make it sound like yourself!
+      // Just be sure to keep the ${walletAddress} in the places you want it replaced by the user's Wallet Address
+      let messages = [
+        "${walletAddress} Thank you for your contribution!",
+        "Hi ${walletAddress}! You left your mark! 👍",
+        "You're way cooler than people think 😎 ${walletAddress}",
+        "Thanks for participating ${walletAddress}! 🔥",
+        "Hi ${walletAddress}! Thanks for collaborating :)",
+      ];
+      // --------------------------------------
+
+      function preload() {
+        vert = `
+              attribute vec3 aPosition;
+
+              void main() {
+                  vec4 pos = vec4(aPosition, 1.0);
+                  pos.xy = pos.xy * 2.0 - 1.0;
+                  gl_Position = pos;
+              }
+          `;
+
+        frag = `
+              #ifdef GL_ES
+              precision highp float;
+              #endif
+
+              uniform vec2 u_resolution;
+              uniform float u_time;
+              uniform vec2 u_mouse; // Mouse position uniform
+              uniform float u_distortionStrength; // Distortion strength uniform
+              uniform float r;
+              uniform float g;
+              uniform float b;
+
+              float random(in vec2 _st) {
+                  return fract(sin(dot(_st.xy, vec2(18.9898, 1.233))) * 43758.5423);
+              }
+
+              float noise(in vec2 _st) {
+                  vec2 i = floor(_st);
+                  vec2 f = fract(_st);
+                  float a = random(i);
+                  float b = random(i + vec2(1.0, 0.0));
+                  float c = random(i + vec2(0.0, 1.0));
+                  float d = random(i + vec2(1.0, 1.0));
+                  vec2 u = f * f * (1. * f);
+                  return mix(a, 1.*b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d- b) * u.x * u.y;
+              }
+
+              void main() {
+                  vec2 st = gl_FragCoord.xy /2. / u_resolution.xy * 4.;
+                  vec3 color = vec3(0.1);
+
+                  // Simulate Physarum movement with particles
+                  vec2 vel = vec2(noise(st + u_time/2.), noise(st * 14.1 - u_time/5.)*sin(u_time)*2.);
+
+      // Apply walking motion
+      float walkSpeed = 0.19; // Adjust the walking speed
+      float walkDistance = 5.1; // Adjust the walking distance
+      float walkOffset = sin(u_time * walkSpeed) * walkDistance;
+      vel.x += walkOffset;
+                  
+                  // Adjust velocity based on mouse position
+                  vel += normalize(u_mouse - st) * 0.5; // Adjust the multiplier to control the influence of the mouse
+                  
+                  // Apply distortion effect exactly at mouse position
+                  vec2 distortion = (u_mouse- st) * u_distortionStrength * vel.x; // Calculate distortion based on mouse position
+                  st -= distortion * vel.x;
+
+                vec2 newPos = st + vel * 0.4;
+                  float f = smoothstep(0.01, 3.6, noise(newPos));
+
+                  color = mix(vec3(0.1, .11, 0.2) * walkOffset/100., vec3(r,g,b), f );
+
+                  gl_FragColor = vec4(color, .90);
+              }
+          `;
+      }
+
+      //1.9    5.9     5.9
+      
+
+      //Set the inicial values of R, G, B colors applied in shader
+      let r = 5.9;
+      let g = 5.9; 
+      let b = 5.9;
+
+      let rR, gG, bB;
+
+      function setup() {
+        createCanvas(windowWidth, windowHeight, WEBGL);
+        noStroke();
+
+        // -loading-
+        startTime = millis();
+
+        gl = this.canvas.getContext("webgl");
+        // gl.disable(gl.DEPTH_TEST);
+
+        sh = createShader(vert, frag);
+
+        // Get all the distortions on refreshing the page
+        distortions = olta.getAll("distortions");
+
+        console.log("on setup");
+
+        // if no distortions were found, sets the distortion strength to 0
+        if (!distortions || distortions.length < 1) {
+          distortionStrength = 0.0;
+          rR = r * scallingFactor;
+          gG = g * scallingFactor;
+          bB = b * scallingFactor;
+        } else {
+          // otherwise get the last element of the array's value and divide by 10 to transform to decimal
+          value = distortions[distortions.length - 1].value / 10;
+          rR = distortions[distortions.length - 1].r;
+          gG = distortions[distortions.length - 1].g;
+          bB = distortions[distortions.length - 1].b;
+          r = rR / scallingFactor;
+          g = gG / scallingFactor;
+          b = bB / scallingFactor;
+        }
+
+        // call the onUpdate function so it keeps updating
+        olta.onUpdate(() => {
+          distortions = olta.getAll("distortions");
+
+          // -Loading-
+          // This function retrieves the connected Othent Wallet to display while interacting
+          fullWalletAddress = olta.getActiveWalletAddress();
+
+          // if no distortions were found, sets the distortion strength to 0
+          if (!distortions || distortions.length < 1) {
+            distortionStrength = 0.0;
+            return;
+          }
+
+          value = distortions[distortions.length - 1].value / 10;
+          r = distortions[distortions.length - 1].r / scallingFactor;
+          g = distortions[distortions.length - 1].g / scallingFactor;
+          b = distortions[distortions.length - 1].b / scallingFactor;
+
+
+          // trigger p5 draw function
+          loop();
+        });
+
+
+       
+
+
+      }
+
+      
+
+      function draw() {
+        mouseXRatio = mouseX / width;
+        mouseYRatio = mouseY / height;
+        
+        console.log("RGB:", r, g, b, "| Distortion:", value); // You can delete this line, it just shows the current RGB and distortion value
+
+        if (value && !isDragging) {
+          // added the isDragging verification so it changes only when effect is off
+          // Updating the required Variable to the last state value
+          distortionStrength = value;
+        }
+
+
+
+        shader(sh);
+
+        sh.setUniform("u_resolution", [width, height]);
+        sh.setUniform("u_time", millis() / 1000.0);
+        sh.setUniform("u_mouse", [mouseXRatio * 2.0, mouseYRatio * 2.0]); // Scale mouse position to match the simulation space
+        sh.setUniform("u_distortionStrength", distortionStrength);
+        sh.setUniform("r", r);
+        sh.setUniform("g", g);
+        sh.setUniform("b", b);
+
+        rect(0, 0, width, height);
+
+        // ----------- Loading Logic -----------
+        // Checking if the artwork is in a loading state
+        if (loading) {
+          let currentTime = millis();
+          elapsedTime = (currentTime - startTime) / 1000;
+          timeLeft = timerInSeconds - elapsedTime;
+
+          // Displaying the loading elements
+          loadingOverlay.style.display = "block";
+ 
+          // console.log('currentTime', currentTime);
+          // When the timer finishes, reset status
+          if (timeLeft <= 0) {
+            timeLeft = 0;
+            loading = false;
+            loadingOverlay.style.display = "none";
+          }
+
+          const dashOffset = ((timerInSeconds - timeLeft) / timerInSeconds) * 283;
+          progress.style.strokeDasharray = `${dashOffset} 360`;
+        } else {
+          // When there's no loading state, hide the loading elements
+          loadingOverlay.style.display = "none";
+        }
+        // ------------------------------------------------
+
+      }
+
+      function windowResized() {
+        resizeCanvas(windowWidth, windowHeight);
+      }
+
+      let isDragging = false;
+
+      function mousePressed() {
+        isDragging = true;
+        console.log("is dragging");
+      }
+
+      function mouseDragged() {
+        // Update distortion only when dragging
+        if (isDragging) {
+          mouseXRatio = mouseX / width;
+          mouseYRatio = mouseY / height;
+          distortionStrength = 2.5;
+          
+          
+        }
+      }
+
+      function mouseReleased() {
+
+        isDragging = false;
+        // Stop distortion when mouse is released was disabled since draw loop already updates it
+        // distortionStrength = 0.0;
+
+        // This prevents the user from adding interactions if the artwork is in the loading state
+        if (!loading) {
+          /*
+            Created document on Olta should have this settings:
+            value: 0-255
+            r: 0-15000000
+            g: 0-15000000
+            b: 0-15000000
+          */
+          rR = Math.round((Math.random() * 15) * scallingFactor);
+          gG = Math.round((Math.random() * 15) * scallingFactor); 
+          bB = Math.round((Math.random() * 15) * scallingFactor);
+
+          const newDistortion = {
+            value: Math.floor(Math.random() * 256),
+            r: rR,
+            g: gG,
+            b: bB,
+          };
+          olta.create("distortions", newDistortion);
+
+          // ----------- Loading Logic -----------
+          loading = true;
+          startTime = millis();
+
+          generateRandomMessage().then((message) => {
+            currentMessage = message;
+            loadingText.innerHTML = currentMessage;
+          });
+          // -------------------------------------
+        }
+      }
+
+      function keyPressed() {
+        if (key === "d" || key === "D") {
+          mouseXRatio = false;
+          mouseYRatio = false;
+
+          // doesn't hold the value since draw function is updating it. "keyPressed" variable could be implemented if needed
+          distortionStrength = 20;
+
+          let isDragging = false;
+        }
+
+        if (key === "p" || key === "P") {
+          noLoop();
+        }
+
+        if (key === "l" || key === "L") {
+          loop();
+        }
+
+        //   if (key === 's') { // Commented out since was breaking the application
+        //     saveGif('mySketch', 4);
+        //   }
+      }
+
+      function touchStarted() {
+        // This prevents the user from adding interactions if the artwork is in the loading state
+        if (!loading) {
+          /*
+            Created document on Olta should have this settings:
+            value: 0-255
+            r: 0-15000000
+            g: 0-15000000
+            b: 0-15000000
+          */
+          rR = Math.round((Math.random() * 15) * scallingFactor);
+          gG = Math.round((Math.random() * 15) * scallingFactor); 
+          bB = Math.round((Math.random() * 15) * scallingFactor);
+
+          const newDistortion = {
+            value: Math.floor(Math.random() * 256),
+            r: rR,
+            g: gG,
+            b: bB,
+          };
+          olta.create("distortions", newDistortion);
+
+          // olta.Create function could be called inside here as well
+          distortionStrength = 20.1;
+          console.log("Screen touched");
+
+          // ----------- Loading Logic -----------
+          loading = true;
+          startTime = millis();
+
+          generateRandomMessage().then((message) => {
+            currentMessage = message;
+            loadingText.innerHTML = currentMessage;
+          });
+          // -------------------------------------
+        }
+      }
+
+      // ----------- Function for Loading Logic -----------
+      async function generateRandomMessage() {
+        let fullWalletAddress = await olta.getActiveWalletAddress();
+        if (fullWalletAddress) {
+          let walletAddress =
+            fullWalletAddress.slice(0, 4) + "..." + fullWalletAddress.slice(-4);
+          let randomIndex = Math.floor(Math.random() * messages.length);
+
+          let finalMessage = messages[randomIndex].replace(
+            "${walletAddress}",
+            `<strong>${walletAddress}</strong>`
+          );
+
+          return finalMessage;
+        } else {
+          return defaultMessage;
+        }
+      }
+    </script>
+  </body>
+</html>
